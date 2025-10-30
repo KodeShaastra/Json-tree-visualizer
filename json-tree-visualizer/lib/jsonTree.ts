@@ -1,6 +1,6 @@
 import type { Edge, Node } from "reactflow";
 
-export type JsonNodeType = "object" | "array" | "primitive";
+export type JsonNodeType = "object" | "array" | "primitive" | "value";
 
 export type FlowNodeData = {
   label: string;
@@ -27,23 +27,39 @@ const VERTICAL_GAP = 120;
 
 const NODE_STYLE_TOKENS = {
   object: {
-    light: { background: "#E0E7FF", border: "#4338CA", color: "#1E1B4B" },
-    dark: { background: "#312E81", border: "#4338CA", color: "#EEF2FF" },
+    light: { background: "#DBEAFE", border: "#1D4ED8", color: "#1E3A8A" },
+    dark: { background: "#1E3A8A", border: "#3B82F6", color: "#DBEAFE" },
   },
   array: {
-    light: { background: "#DCFCE7", border: "#15803D", color: "#14532D" },
-    dark: { background: "#14532D", border: "#22C55E", color: "#ECFDF5" },
+    light: { background: "#FEF3C7", border: "#D97706", color: "#7C2D12" },
+    dark: { background: "#7C2D12", border: "#F59E0B", color: "#FFFBEB" },
   },
   primitive: {
-    light: { background: "#FFEDD5", border: "#EA580C", color: "#7C2D12" },
-    dark: { background: "#7C2D12", border: "#FB923C", color: "#FFF7ED" },
+    light: { background: "#F3E8FF", border: "#7C3AED", color: "#4C1D95" },
+    dark: { background: "#4C1D95", border: "#A855F7", color: "#F3E8FF" },
+  },
+  value: {
+    light: { background: "#DCFCE7", border: "#047857", color: "#064E3B" },
+    dark: { background: "#064E3B", border: "#34D399", color: "#ECFDF5" },
+  },
+} as const;
+
+const HIGHLIGHT_STYLE = {
+  light: {
+    borderColor: "#F97316",
+    glow: "rgba(249, 115, 22, 0.28)",
+  },
+  dark: {
+    borderColor: "#FBBF24",
+    glow: "rgba(251, 191, 36, 0.28)",
   },
 } as const;
 
 export const MINIMAP_COLORS: Record<JsonNodeType, string> = {
-  object: "#4338CA",
-  array: "#15803D",
-  primitive: "#EA580C",
+  object: "#1D4ED8",
+  array: "#D97706",
+  primitive: "#7C3AED",
+  value: "#047857",
 };
 
 function detectNodeType(value: unknown): JsonNodeType {
@@ -89,9 +105,11 @@ function buildStructuredNode(
       )
     );
 
+    const label = key === "root" ? "{ }" : `${key} { }`;
+
     return {
       id: path,
-      label: key === "root" ? "{ }" : key,
+      label,
       type,
       depth,
       children,
@@ -116,17 +134,32 @@ function buildStructuredNode(
     };
   }
 
-  const display =
-    key === "root"
-      ? formatPrimitive(value)
-      : `${key}: ${formatPrimitive(value)}`;
+  const formattedValue = formatPrimitive(value);
+
+  if (key === "root") {
+    return {
+      id: path,
+      label: formattedValue,
+      type: "value",
+      depth,
+      children: [],
+    };
+  }
+
+  const valueNode: StructuredNode = {
+    id: `${path}.value`,
+    label: formattedValue,
+    type: "value",
+    depth: depth + 1,
+    children: [],
+  };
 
   return {
     id: path,
-    label: display,
+    label: key,
     type,
     depth,
-    children: [],
+    children: [valueNode],
   };
 }
 
@@ -182,23 +215,192 @@ function assignPositions(
   return positions;
 }
 
-function getNodeStyle(type: JsonNodeType, isDark: boolean) {
+function getNodeStyle(
+  type: JsonNodeType,
+  isDark: boolean,
+  isHighlighted = false
+) {
   const palette = NODE_STYLE_TOKENS[type][isDark ? "dark" : "light"];
+  const highlightPalette = HIGHLIGHT_STYLE[isDark ? "dark" : "light"];
 
   return {
     background: palette.background,
     color: palette.color,
-    border: `1px solid ${palette.border}`,
+    borderColor: isHighlighted ? highlightPalette.borderColor : palette.border,
+    borderWidth: isHighlighted ? 2 : 1,
+    borderStyle: "solid",
     padding: "8px 12px",
     borderRadius: 8,
     fontSize: 12,
     fontWeight: 500,
+    boxShadow: isHighlighted ? `0 0 0 6px ${highlightPalette.glow}` : "none",
+    transition: "box-shadow 0.2s ease, border-color 0.2s ease",
+    zIndex: isHighlighted ? 1 : 0,
   } satisfies FlowNode["style"];
 }
 
-export function buildFlowGraph(value: unknown, isDark: boolean): FlowGraph {
+function tokenizeJsonPath(jsonPath: string): string[] | null {
+  const trimmed = jsonPath.trim();
+
+  if (trimmed.length === 0) {
+    return [];
+  }
+
+  let cursor = trimmed;
+
+  if (cursor.startsWith("$")) {
+    cursor = cursor.slice(1);
+    if (cursor.startsWith(".")) {
+      cursor = cursor.slice(1);
+    }
+  }
+
+  const tokens: string[] = [];
+  let index = 0;
+
+  while (index < cursor.length) {
+    const char = cursor[index];
+
+    if (char === ".") {
+      index += 1;
+      continue;
+    }
+
+    if (char === "[") {
+      const closeBracketIndex = cursor.indexOf("]", index + 1);
+
+      if (closeBracketIndex === -1) {
+        return null;
+      }
+
+      const segment = cursor.slice(index + 1, closeBracketIndex).trim();
+
+      if (segment.length === 0) {
+        return null;
+      }
+
+      const firstChar = segment[0];
+      const lastChar = segment[segment.length - 1];
+
+      if ((firstChar === "'" || firstChar === '"') && lastChar === firstChar) {
+        tokens.push(segment.slice(1, -1));
+        index = closeBracketIndex + 1;
+        continue;
+      }
+
+      if (/^-?\d+$/.test(segment)) {
+        tokens.push(String(Number.parseInt(segment, 10)));
+        index = closeBracketIndex + 1;
+        continue;
+      }
+
+      return null;
+    }
+
+    const start = index;
+
+    while (
+      index < cursor.length &&
+      cursor[index] !== "." &&
+      cursor[index] !== "["
+    ) {
+      index += 1;
+    }
+
+    const token = cursor.slice(start, index).trim();
+
+    if (token.length === 0) {
+      return null;
+    }
+
+    tokens.push(token);
+  }
+
+  return tokens;
+}
+
+export type JsonPathResolution = {
+  nodeId: string;
+  nodeType: JsonNodeType;
+};
+
+export function resolveNodeIdForJsonPath(
+  value: unknown,
+  jsonPath: string
+): JsonPathResolution | null {
+  const tokens = tokenizeJsonPath(jsonPath);
+
+  if (tokens === null) {
+    return null;
+  }
+
+  if (tokens.length === 0) {
+    const rootType = detectNodeType(value);
+
+    if (rootType === "primitive") {
+      return { nodeId: "root", nodeType: "value" };
+    }
+
+    return null;
+  }
+
+  let current: unknown = value;
+  let currentPath = "root";
+
+  for (const token of tokens) {
+    const currentType = detectNodeType(current);
+
+    if (currentType === "array") {
+      const numericIndex = Number.parseInt(token, 10);
+
+      if (!Number.isInteger(numericIndex) || numericIndex < 0) {
+        return null;
+      }
+
+      const arrayValue = current as unknown[];
+
+      if (numericIndex >= arrayValue.length) {
+        return null;
+      }
+
+      current = arrayValue[numericIndex];
+      currentPath = `${currentPath}.${numericIndex}`;
+      continue;
+    }
+
+    if (currentType === "object") {
+      if (
+        current === null ||
+        typeof current !== "object" ||
+        !Object.prototype.hasOwnProperty.call(current, token)
+      ) {
+        return null;
+      }
+
+      current = (current as Record<string, unknown>)[token];
+      currentPath = `${currentPath}.${token}`;
+      continue;
+    }
+
+    return null;
+  }
+
+  const resolvedType = detectNodeType(current);
+
+  if (resolvedType === "primitive") {
+    return { nodeId: `${currentPath}.value`, nodeType: "value" };
+  }
+
+  return { nodeId: currentPath, nodeType: resolvedType };
+}
+
+export function buildFlowGraph(
+  value: unknown,
+  isDark: boolean,
+  highlightNodeId: string | null = null
+): FlowGraph {
   const root = buildStructuredNode(value, "root", 0, "root");
-  const hideRootNode = root.type !== "primitive";
+  const hideRootNode = root.type !== "value";
   const positions = assignPositions(root);
 
   let nodes: FlowNode[] = [];
@@ -216,7 +418,7 @@ export function buildFlowGraph(value: unknown, isDark: boolean): FlowGraph {
       position,
       draggable: false,
       selectable: false,
-      style: getNodeStyle(node.type, isDark),
+      style: getNodeStyle(node.type, isDark, node.id === highlightNodeId),
     });
 
     for (const child of node.children) {
