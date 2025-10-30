@@ -68,3 +68,6 @@ export default function JsonInputPanel({
     </div>
   );
 }
+<h2 className="text-sm font-medium text-slate-500 dark:text-slate-300">
+  Parsed preview
+</h2>;
